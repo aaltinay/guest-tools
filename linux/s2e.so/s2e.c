@@ -45,6 +45,8 @@
 #include <s2e/s2e.h>
 #include <s2e/s2e.h>
 
+#include <limits.h>
+#include <libgen.h>
 #define MAX_S2E_SYM_ARGS_SIZE 44
 
 // ***********************************
@@ -208,6 +210,7 @@ static void register_modules(procmap_entry_t *map) {
             m.native_base = 0;
             m.kernel_mode = 0;
 
+            s2e_moduleexec_add_module((char *) m.name, (char *) m.name, 0);
             s2e_raw_load_module(&m);
             ++map;
         }
@@ -223,6 +226,8 @@ static void register_modules(procmap_entry_t *map) {
             m.end_data = 0;
             m.module_path = (uint64_t) map->name;
 
+            const char *name = __base_name(map->name);
+            s2e_moduleexec_add_module(name, name, 0);
             s2e_linux_load_module(getpid(), &m);
             ++map;
         }
@@ -234,6 +239,11 @@ static void initialize_modules() {
     procmap_entry_t *proc_map = load_process_map();
     display_process_map(proc_map);
     register_modules(proc_map);
+}
+
+static void __s2e_fini_env()
+{
+    s2e_moduleexec_remove_module("s2e.so");
 }
 
 static void initialize_cmdline(int argc, char **argv) {
@@ -281,10 +291,15 @@ static void initialize_cmdline(int argc, char **argv) {
     }
 
     for (i = 0; i < argc; i++) {
+        char buffer[100];
         if (args_type[i]) {
+            snprintf(buffer, 100, "{s2e.c} [%d. arg is concolic]", i);
             snprintf(sym_arg_name, MAX_S2E_SYM_ARGS_SIZE, "arg%d", i);
             s2e_make_concolic(argv[i], strlen(argv[i]), sym_arg_name);
+        } else {
+            snprintf(buffer, 100, "{s2e.c} [%d. arg is NOT concolic]", i);
         }
+        s2e_warning(buffer);    
     }
 
     free(args_type);
@@ -295,24 +310,55 @@ static void initialize_cmdline(int argc, char **argv) {
 // ****************************
 
 // The type of __libc_start_main
-typedef int (*T_libc_start_main)(int *(main)(int, char **, char **), int argc, char **ubp_av, void (*init)(void),
-                                 void (*fini)(void), void (*rtld_fini)(void), void(*stack_end));
 
-int __libc_start_main(int *(main)(int, char **, char **), int argc, char **ubp_av, void (*init)(void),
-                      void (*fini)(void), void (*rtld_fini)(void), void *stack_end) __attribute__((noreturn));
+static int __s2e_is_target_program(void) {
+    char buf[PATH_MAX];
+    char *target = getenv("S2E_TARGET_BASENAME");
 
-int __libc_start_main(int *(main)(int, char **, char **), int argc, char **ubp_av, void (*init)(void),
-                      void (*fini)(void), void (*rtld_fini)(void), void *stack_end) {
+    // If no target is specified, instrument, the first encountered binary
+    if (!target)
+        return 1;
+
+    if (readlink("/proc/self/exe", buf, sizeof (buf)) < 0)
+        __emit_error("could not resolve /proc/self/exe");
+
+    return !strcmp(basename(buf), target);
+}
+
+
+typedef int (*T_main)(int, char**, char**);
+typedef int (*T_libc_start_main)(T_main main, int argc, char **ubp_av, void (*init)(void),
+                                 void (*fini)(void), void (*rtld_fini)(void), void(*stack_end)) __attribute__((noreturn));
+
+//int __libc_start_main(int T_main main, int argc, char **ubp_av, void (*init)(void),
+//                      void (*fini)(void), void (*rtld_fini)(void), void *stack_end);
+
+static T_main __s2e_oldmain;
+
+static int __s2e_main(int argc, char **argv, char **envp) {
     initialize_models();
     initialize_modules();
-
-    initialize_cmdline(argc, ubp_av);
-
+    initialize_cmdline(argc, argv);
     g_enable_function_models = s2e_plugin_loaded("FunctionModels");
 
+    int status = __s2e_oldmain(argc, argv, envp);
+    __s2e_fini_env();
+
+    return status;
+}
+
+int __attribute__((noreturn)) __libc_start_main(T_main main, int argc, char **ubp_av, void (*init)(void),
+                      void (*fini)(void), void (*rtld_fini)(void), void *stack_end) {
+    s2e_warning("{s2e.c} [Running modified __libc_start_main]");    
+    
     T_libc_start_main orig_libc_start_main = (T_libc_start_main) dlsym(RTLD_NEXT, "__libc_start_main");
+
+    if (__s2e_is_target_program()) {
+        __s2e_oldmain = main;
+        main = __s2e_main;
+    }
 
     (*orig_libc_start_main)(main, argc, ubp_av, init, fini, rtld_fini, stack_end);
 
-    exit(1); // This is never reached
+    //exit(1); // This is never reached
 }

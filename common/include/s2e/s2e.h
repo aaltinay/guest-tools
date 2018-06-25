@@ -697,8 +697,17 @@ static inline void s2e_moduleexec_add_module(const char *moduleId, const char *m
     __s2e_touch_string(moduleId);
     __s2e_touch_string(moduleName);
     __asm__ __volatile__(
-        S2E_INSTRUCTION_SIMPLE(MODULE_EXECUTION_DETECTOR_OPCODE)
+        S2E_INSTRUCTION_COMPLEX(MODULE_EXECUTION_DETECTOR_OPCODE, 00)
             : : "c" (moduleId), "a" (moduleName), "d" (kernelMode)
+    );
+}
+
+static inline void s2e_moduleexec_remove_module(const char *moduleId)
+{
+    __s2e_touch_string(moduleId);
+    __asm__ __volatile__(
+        S2E_INSTRUCTION_COMPLEX(MODULE_EXECUTION_DETECTOR_OPCODE, 01)
+            : : "c" (moduleId)
     );
 }
 
