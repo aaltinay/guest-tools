@@ -210,7 +210,10 @@ static void register_modules(procmap_entry_t *map) {
             m.native_base = 0;
             m.kernel_mode = 0;
 
-            s2e_moduleexec_add_module((char *) m.name, (char *) m.name, 0);
+            if(!strcmp((char *) m.name, "s2e.so")) {
+                s2e_moduleexec_add_module((char *) m.name, (char *) m.name, 0);
+            }
+
             s2e_raw_load_module(&m);
             ++map;
         }
@@ -227,7 +230,10 @@ static void register_modules(procmap_entry_t *map) {
             m.module_path = (uint64_t) map->name;
 
             const char *name = __base_name(map->name);
-            s2e_moduleexec_add_module(name, name, 0);
+            if(!strcmp(name, "s2e.so")) {
+                s2e_moduleexec_add_module(name, name, 0);
+            }
+            
             s2e_linux_load_module(getpid(), &m);
             ++map;
         }
